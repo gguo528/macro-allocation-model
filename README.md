@@ -1,4 +1,4 @@
-# Macro Allocation Model
+<img width="585" height="620" alt="image" src="https://github.com/user-attachments/assets/2b4f0854-8c2b-4cc1-aae9-9f488973440f" /># Macro Allocation Model
 
 ## Overview
 
@@ -95,16 +95,17 @@ Key findings:
 
 ## Repository Structure
 
-macro-allocation-model 
-├── README.md 
-├── macro_model.pdf 
-├── R 
-│ ├── helpers.R 
-│ ├── v1_model.R 
-│ └── v2_model.R 
-├── data 
+```text
+macro-allocation-model
+├── README.md
+├── macro_model.pdf
+├── R
+│   ├── helpers.R
+│   ├── v1_model.R
+│   └── v2_model.R
+├── data
 └── outputs
-
+```
 ---
 
 ## How to Run
