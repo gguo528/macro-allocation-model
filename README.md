@@ -95,16 +95,17 @@ Key findings:
 
 ## Repository Structure
 
-macro-allocation-model 
-├── README.md 
-├── macro_model.pdf 
-├── R 
-│ ├── helpers.R 
-│ ├── v1_model.R 
-│ └── v2_model.R 
-├── data 
+```text
+macro-allocation-model
+├── README.md
+├── macro_model.pdf
+├── R
+│   ├── helpers.R
+│   ├── v1_model.R
+│   └── v2_model.R
+├── data
 └── outputs
-
+```
 ---
 
 ## How to Run
@@ -142,5 +143,10 @@ Limitations
 - No optimization or machine learning used
 - Results are historical and not predictive
 
-Author
-George Guo
+## Author
+
+George Guo  
+Penn State University  
+B.S. Statistics  
+
+GitHub: https://github.com/gguo528
