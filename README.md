@@ -1,4 +1,4 @@
-<img width="585" height="620" alt="image" src="https://github.com/user-attachments/assets/2b4f0854-8c2b-4cc1-aae9-9f488973440f" /># Macro Allocation Model
+# Macro Allocation Model
 
 ## Overview
 
