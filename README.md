@@ -117,19 +117,20 @@ git clone https://github.com/gguo528/macro-allocation-model.git
 2. Open in RStudio
 
 3. Run:
+```bash
 source("R/v1_model.R")
 source("R/v2_model.R")
-
+```
 4. Or knit the report:
 
+```bash
 rmarkdown::render("Macro-portfolio-model.Rmd")
+```
 
 Notes
 
 - FRED data is pulled using fredgraph.csv endpoints (no API key required)
-
 - All time series are aligned to month-end
-
 - Signals are lagged to avoid lookahead bias
 
 Limitations
