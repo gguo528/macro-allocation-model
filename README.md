@@ -143,5 +143,10 @@ Limitations
 - No optimization or machine learning used
 - Results are historical and not predictive
 
-Author
-George Guo
+## Author
+
+George Guo  
+Penn State University  
+B.S. Statistics  
+
+GitHub: https://github.com/gguo528
