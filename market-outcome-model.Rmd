@@ -1,0 +1,678 @@
+---
+title: "Market Outcome Model"
+author: "George Guo"
+date: "2026-03-24"
+output:
+  pdf_document:
+    keep_tex: true
+header-includes:
+  - \usepackage{booktabs}
+  - \usepackage{float}
+  - \usepackage{pdflscape}
+  - \usepackage{caption}
+  - \usepackage{array}
+geometry: margin=0.8in
+---
+## Key Finding
+
+Macroeconomic variables do not reliably predict equity returns, but they do predict downside risk and volatility with meaningful out-of-sample accuracy. The strongest predictive power appears in drawdown and volatility classification, indicating that macro signals are more useful for risk management than for directional return forecasting.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE
+)
+
+setwd("C:/Users/mxg26/Downloads/macro-allocation-model")
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(lubridate)
+  library(zoo)
+  library(scales)
+  library(knitr)
+  library(kableExtra)
+})
+
+Sys.setlocale("LC_TIME", "C")
+
+source(file.path("R", "helpers.R"))
+source(file.path("R", "v1_model.R"))
+```
+
+# 1. Objective
+
+The purpose of this project is to test whether macroeconomic regime information can be used to predict future market risk outcomes rather than only drive portfolio allocation decisions. Instead of mapping macro conditions directly to asset weights, this model estimates whether the current macro backdrop is associated with a higher probability of positive future returns, elevated drawdowns, or volatility spikes.
+
+The target asset is SPY. The model evaluates whether macro regime variables such as inflation, growth, policy, yield curve conditions, and credit spreads contain useful information about forward 12-month equity returns and forward risk outcomes.
+
+This project extends the earlier macro allocation model. The first model focused on portfolio construction. This one focuses on conditional market outcome prediction.
+
+# 2. Forward Outcome Construction
+
+Three forward-looking outcomes are constructed from monthly SPY returns. The first is the forward 12-month cumulative return. The second is the worst drawdown experienced over the next 12 months. The third is realized volatility over the next 6 months.
+
+These outcomes allow the model to move from descriptive regime analysis to formal prediction of future market behavior.
+
+```{r outcome-functions}
+forward_cum_return <- function(ret, horizon = 12) {
+  lead_ret <- dplyr::lead(ret, 1)
+
+  zoo::rollapply(
+    data = 1 + lead_ret,
+    width = horizon,
+    FUN = function(x) prod(x) - 1,
+    fill = NA,
+    align = "left"
+  )
+}
+
+forward_max_drawdown <- function(ret, horizon = 12) {
+  lead_ret <- dplyr::lead(ret, 1)
+
+  zoo::rollapply(
+    data = lead_ret,
+    width = horizon,
+    FUN = function(x) {
+      wealth <- cumprod(1 + x)
+      drawdown <- wealth / cummax(wealth) - 1
+      min(drawdown, na.rm = TRUE)
+    },
+    fill = NA,
+    align = "left"
+  )
+}
+
+forward_realized_vol <- function(ret, horizon = 6) {
+  lead_ret <- dplyr::lead(ret, 1)
+
+  zoo::rollapply(
+    data = lead_ret,
+    width = horizon,
+    FUN = function(x) sd(x, na.rm = TRUE) * sqrt(12),
+    fill = NA,
+    align = "left"
+  )
+}
+```
+
+```{r build-outcomes}
+macro_model_df <- macro_regimes %>%
+  mutate(date = ceiling_date(date, "month") - days(1)) %>%
+  select(
+    date,
+    regime,
+    primary_regime,
+    risk_overlay,
+    inflation_score,
+    growth_score,
+    policy_score,
+    curve_score,
+    credit_score,
+    macro_score,
+    cpi_yoy,
+    core_cpi_yoy,
+    unrate_6m_delta_smooth,
+    payems_3m_ann_smooth,
+    indpro_3m_ann_smooth,
+    houst_yoy_smooth,
+    umcsent_6m_delta,
+    real_fedfunds,
+    real_10y,
+    term_spread_10y3m,
+    term_spread_10y2y,
+    baa_aaa_spread,
+    baa_10y_spread_smooth
+  ) %>%
+  arrange(date)
+
+spy_model_df <- asset_returns %>%
+  select(date, spy_ret) %>%
+  arrange(date)
+
+outcome_data <- macro_model_df %>%
+  inner_join(spy_model_df, by = "date") %>%
+  arrange(date) %>%
+  mutate(
+    fwd_12m_return = forward_cum_return(spy_ret, 12),
+    fwd_12m_maxdd  = forward_max_drawdown(spy_ret, 12),
+    fwd_6m_vol     = forward_realized_vol(spy_ret, 6)
+  )
+
+vol_spike_cutoff <- quantile(outcome_data$fwd_6m_vol, 0.75, na.rm = TRUE)
+
+outcome_data <- outcome_data %>%
+  mutate(
+    target_up_12m       = if_else(fwd_12m_return > 0, 1, 0, missing = NA_integer_),
+    target_dd10_12m     = if_else(fwd_12m_maxdd <= -0.10, 1, 0, missing = NA_integer_),
+    target_vol_spike_6m = if_else(fwd_6m_vol >= vol_spike_cutoff, 1, 0, missing = NA_integer_)
+  )
+
+outcome_preview <- outcome_data %>%
+  select(
+    date, regime, spy_ret, fwd_12m_return, fwd_12m_maxdd, fwd_6m_vol,
+    target_up_12m, target_dd10_12m, target_vol_spike_6m
+  ) %>%
+  slice_head(n = 12)
+
+outcome_preview_tbl <- outcome_preview %>%
+  rename(
+    Date = date,
+    Regime = regime,
+    SPY_Ret = spy_ret,
+    FwdRet_12M = fwd_12m_return,
+    MaxDD_12M = fwd_12m_maxdd,
+    Vol_6M = fwd_6m_vol,
+    Up12M = target_up_12m,
+    DD10_12M = target_dd10_12m,
+    VolSpike_6M = target_vol_spike_6m
+  )
+
+kbl(
+  outcome_preview_tbl,
+  digits = 3,
+  caption = "Preview of Forward Outcome Variables",
+  booktabs = TRUE,
+  align = "l"
+) %>%
+  kable_styling(
+    latex_options = c("hold_position", "scale_down"),
+    font_size = 7,
+    full_width = FALSE,
+    position = "center"
+  )
+```
+
+# 3. Regime-Level Outcome Analysis
+
+Before fitting a predictive model, it is necessary to verify that macro regimes are associated with meaningfully different forward outcomes. If regimes do not differentiate future returns or risk, then predictive modeling is not justified.
+
+```{r regime-summary}
+regime_outcome_summary <- outcome_data %>%
+  filter(!is.na(regime)) %>%
+  group_by(regime) %>%
+  summarise(
+    months = n(),
+    avg_fwd_12m_return = mean(fwd_12m_return, na.rm = TRUE),
+    median_fwd_12m_return = median(fwd_12m_return, na.rm = TRUE),
+    prob_up_12m = mean(target_up_12m, na.rm = TRUE),
+    prob_dd10_12m = mean(target_dd10_12m, na.rm = TRUE),
+    avg_fwd_12m_maxdd = mean(fwd_12m_maxdd, na.rm = TRUE),
+    avg_fwd_6m_vol = mean(fwd_6m_vol, na.rm = TRUE),
+    prob_vol_spike_6m = mean(target_vol_spike_6m, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(months))
+
+regime_outcome_summary_tbl <- regime_outcome_summary %>%
+  rename(
+    Regime = regime,
+    N = months,
+    AvgRet_12M = avg_fwd_12m_return,
+    MedRet_12M = median_fwd_12m_return,
+    P_Up12M = prob_up_12m,
+    P_DD10_12M = prob_dd10_12m,
+    AvgMaxDD_12M = avg_fwd_12m_maxdd,
+    AvgVol_6M = avg_fwd_6m_vol,
+    P_VolSpike_6M = prob_vol_spike_6m
+  )
+
+kbl(
+  regime_outcome_summary_tbl,
+  digits = 3,
+  caption = "Forward SPY Outcomes by Macro Regime",
+  booktabs = TRUE,
+  align = "l"
+) %>%
+  kable_styling(
+    latex_options = c("hold_position", "scale_down"),
+    font_size = 7,
+    full_width = FALSE,
+    position = "center"
+  )
+```
+
+Regime-specific summaries for rare states should be interpreted cautiously because several regimes have very small sample counts.
+
+```{r regime-plot}
+regime_outcome_summary %>%
+  filter(months >= 6) %>%
+  ggplot(aes(x = reorder(regime, avg_fwd_12m_return), y = avg_fwd_12m_return)) +
+  geom_col() +
+  coord_flip() +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(
+    title = "Average Forward 12-Month SPY Return by Macro Regime",
+    x = NULL,
+    y = "Forward 12M Return"
+  ) +
+  theme_minimal(base_size = 11)
+```
+
+Macro regimes exhibit materially different forward return and risk distributions. This validates the use of regime information as predictive input. The most important implication is not that regimes forecast returns precisely, but that they meaningfully separate benign and adverse future market conditions.
+
+# 4. Modeling Dataset Construction
+
+```{r model-dataset}
+feature_cols <- c(
+  "inflation_score",
+  "growth_score",
+  "policy_score",
+  "curve_score",
+  "credit_score",
+  "macro_score",
+  "cpi_yoy",
+  "unrate_6m_delta_smooth",
+  "payems_3m_ann_smooth",
+  "real_fedfunds",
+  "term_spread_10y3m",
+  "baa_aaa_spread",
+  "baa_10y_spread_smooth"
+)
+
+model_df <- outcome_data %>%
+  select(
+    date,
+    regime,
+    primary_regime,
+    risk_overlay,
+    all_of(feature_cols),
+    target_up_12m,
+    target_dd10_12m,
+    target_vol_spike_6m
+  ) %>%
+  filter(if_all(all_of(feature_cols), ~ is.finite(.))) %>%
+  filter(
+    !is.na(target_up_12m),
+    !is.na(target_dd10_12m),
+    !is.na(target_vol_spike_6m)
+  ) %>%
+  arrange(date)
+
+target_rates <- model_df %>%
+  summarise(
+    up_rate = mean(target_up_12m),
+    dd_rate = mean(target_dd10_12m),
+    vol_rate = mean(target_vol_spike_6m)
+  )
+
+target_rates_display <- target_rates %>%
+  rename(
+    Positive_12M_Return = up_rate,
+    Drawdown_10pct_12M = dd_rate,
+    Volatility_Spike_6M = vol_rate
+  )
+
+kable(
+  target_rates_display,
+  digits = 3,
+  caption = "Target Event Rates in Modeling Sample"
+) %>%
+  kable_styling(latex_options = c("hold_position", "scale_down"))
+```
+
+```{r}
+feature_label_map <- c(
+  inflation_score = "infl_score",
+  growth_score = "grow_score",
+  policy_score = "pol_score",
+  curve_score = "curve_score",
+  credit_score = "cred_score",
+  macro_score = "macro_score",
+  cpi_yoy = "cpi_yoy",
+  unrate_6m_delta_smooth = "unrate_6m",
+  payems_3m_ann_smooth = "payems_3m",
+  real_fedfunds = "real_ff",
+  term_spread_10y3m = "term_10y3m",
+  baa_aaa_spread = "baa_aaa",
+  baa_10y_spread_smooth = "baa_10y"
+)
+
+cor_matrix <- model_df %>%
+  select(all_of(feature_cols)) %>%
+  cor()
+
+rownames(cor_matrix) <- feature_label_map[rownames(cor_matrix)]
+colnames(cor_matrix) <- feature_label_map[colnames(cor_matrix)]
+
+cor_preview <- round(cor_matrix, 2)
+
+cor_tbl_1 <- cor_preview[, 1:7]
+cor_tbl_2 <- cor_preview[, 8:13]
+```
+
+```{r}
+kbl(
+  cor_tbl_1,
+  digits = 2,
+  caption = "Feature Correlation Matrix (Part 1)",
+  booktabs = TRUE,
+  align = "l"
+) %>%
+  kable_styling(
+    latex_options = c("hold_position", "scale_down"),
+    font_size = 7,
+    full_width = FALSE,
+    position = "center"
+  )
+```
+
+
+```{r}
+kbl(
+  cor_tbl_2,
+  digits = 2,
+  caption = "Feature Correlation Matrix (Part 2)",
+  booktabs = TRUE,
+  align = "l"
+) %>%
+  kable_styling(
+    latex_options = c("hold_position", "scale_down"),
+    font_size = 7,
+    full_width = FALSE,
+    position = "center"
+  )
+
+```
+
+**Feature abbreviation key**
+
+```{r}
+feature_key <- tibble::tribble(
+  ~Short,        ~Meaning,
+  "infl_score",  "inflation_score",
+  "grow_score",  "growth_score",
+  "pol_score",   "policy_score",
+  "curve_score", "curve_score",
+  "cred_score",  "credit_score",
+  "macro_score", "macro_score",
+  "cpi_yoy",     "cpi_yoy",
+  "unrate_6m",   "unrate_6m_delta_smooth",
+  "payems_3m",   "payems_3m_ann_smooth",
+  "real_ff",     "real_fedfunds",
+  "term_10y3m",  "term_spread_10y3m",
+  "baa_aaa",     "baa_aaa_spread",
+  "baa_10y",     "baa_10y_spread_smooth"
+)
+
+kbl(
+  feature_key,
+  booktabs = TRUE,
+  align = "ll"
+) %>%
+  kable_styling(
+    latex_options = c("hold_position"),
+    font_size = 8,
+    full_width = FALSE,
+    position = "center"
+  )
+```
+
+
+The modeling dataset is structured so that each observation contains information available at a given point in time and the corresponding future realized market outcome. Several macro variables are correlated, so the model should be interpreted as predictive rather than causal.
+
+# 5. Predictive Modeling Framework
+
+The objective is to estimate the probability of future market outcomes using macroeconomic features available at each point in time.
+
+A logistic regression framework is used to model binary outcomes. To avoid lookahead bias, an expanding window approach is applied. At each time step, the model is trained using only historical data and used to generate a prediction for the next observation.
+
+```{r model-functions}
+calc_auc <- function(y, p) {
+  keep <- is.finite(y) & is.finite(p)
+  y <- y[keep]
+  p <- p[keep]
+
+  if (length(unique(y)) < 2) return(NA_real_)
+
+  n1 <- sum(y == 1)
+  n0 <- sum(y == 0)
+
+  ranks <- rank(p, ties.method = "average")
+  (sum(ranks[y == 1]) - n1 * (n1 + 1) / 2) / (n1 * n0)
+}
+
+calc_logloss <- function(y, p) {
+  keep <- is.finite(y) & is.finite(p)
+  y <- y[keep]
+  p <- p[keep]
+
+  p <- pmin(pmax(p, 1e-6), 1 - 1e-6)
+
+  -mean(y * log(p) + (1 - y) * log(1 - p))
+}
+
+expanding_glm_predictions <- function(df, target, features, min_train = 120) {
+  out <- vector("list", max(0, nrow(df) - min_train))
+  k <- 1
+
+  formula_text <- paste(target, "~", paste(features, collapse = " + "))
+  model_formula <- as.formula(formula_text)
+
+  for (i in seq(min_train, nrow(df) - 1)) {
+    train <- df[1:i, ]
+    test  <- df[i + 1, , drop = FALSE]
+
+    fit <- try(glm(model_formula, data = train, family = binomial()), silent = TRUE)
+    if (inherits(fit, "try-error")) next
+
+    prob <- try(predict(fit, newdata = test, type = "response"), silent = TRUE)
+    if (inherits(prob, "try-error")) next
+
+    out[[k]] <- tibble(
+      date = test$date,
+      actual = test[[target]],
+      prob = as.numeric(prob),
+      pred = if_else(prob >= 0.5, 1, 0)
+    )
+
+    k <- k + 1
+  }
+
+  bind_rows(out)
+}
+```
+
+```{r}
+model_df_scaled <- model_df %>%
+  mutate(across(all_of(feature_cols), ~ as.numeric(scale(.))))
+```
+
+```{r run-model}
+targets <- c("target_up_12m", "target_dd10_12m", "target_vol_spike_6m")
+
+prediction_results <- bind_rows(
+  lapply(targets, function(x) {
+    expanding_glm_predictions(
+      df = model_df_scaled,
+      target = x,
+      features = feature_cols,
+      min_train = 120
+    ) %>%
+      mutate(target = x)
+  })
+)
+```
+
+```{r}
+target_label_map <- c(
+  target_up_12m = "Positive 12M Return",
+  target_dd10_12m = "12M Drawdown <= -10%",
+  target_vol_spike_6m = "6M Volatility Spike"
+)
+```
+
+
+# 6. Results
+
+The model is evaluated using out-of-sample probability estimates. Accuracy provides a simple classification measure, while Brier score and log loss evaluate probability quality. AUC measures ranking ability, which is the most important metric in this setting.
+
+```{r}
+prediction_summary <- prediction_results %>%
+  group_by(target) %>%
+  summarise(
+    observations = n(),
+    base_rate = mean(actual),
+    avg_prob = mean(prob),
+    accuracy = mean(pred == actual),
+    brier = mean((prob - actual)^2),
+    logloss = calc_logloss(actual, prob),
+    auc = calc_auc(actual, prob),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(auc))
+
+prediction_summary_display <- prediction_summary %>%
+  mutate(target = recode(target, !!!target_label_map)) %>%
+  rename(Target = target)
+
+kable(prediction_summary_display, digits = 3, caption = "Out-of-Sample Prediction Performance") %>%
+  kable_styling(latex_options = c("hold_position", "scale_down"))
+```
+
+```{r}
+separation_summary <- prediction_results %>%
+  group_by(target) %>%
+  summarise(
+    top_20 = mean(actual[prob >= quantile(prob, 0.8)]),
+    bottom_20 = mean(actual[prob <= quantile(prob, 0.2)]),
+    spread = top_20 - bottom_20,
+    .groups = "drop"
+  ) %>%
+  arrange(desc(spread))
+
+separation_summary_display <- separation_summary %>%
+  mutate(target = recode(target, !!!target_label_map)) %>%
+  rename(Target = target)
+
+kable(separation_summary_display, digits = 3, caption = "Probability Separation Between Highest and Lowest Risk Buckets") %>%
+  kable_styling(latex_options = c("hold_position", "scale_down"))
+```
+
+## Key Result
+
+The model shows strong separation for adverse market events. For 12-month drawdowns, the top predicted-risk bucket experienced the event roughly 63% of the time versus 3.7% in the bottom bucket. For volatility spikes, the equivalent separation was roughly 63% versus 11%. By contrast, the return-direction model is materially weaker.
+
+Return prediction performance is weak, with AUC near 0.60. This is consistent with efficient market behavior and reinforces that macro signals primarily capture risk regimes rather than directional alpha.
+
+# 7. Probability Calibration
+
+A useful probability model should assign higher predicted probabilities to events that occur more frequently. Calibration assesses whether predicted probabilities align with realized outcome frequencies.
+
+```{r calibration}
+calibration_table <- prediction_results %>%
+  group_by(target) %>%
+  mutate(bucket = ntile(prob, 5)) %>%
+  group_by(target, bucket) %>%
+  summarise(
+    avg_prob = mean(prob),
+    actual_rate = mean(actual),
+    n = n(),
+    .groups = "drop"
+  )
+
+calibration_table_display <- calibration_table %>%
+  mutate(target = recode(target, !!!target_label_map)) %>%
+  rename(Target = target)
+
+kable(calibration_table_display, digits = 3, caption = "Calibration by Predicted Probability Quintile") %>%
+  kable_styling(latex_options = c("hold_position", "scale_down"))
+```
+
+```{r calibration-plot}
+calibration_plot_data <- calibration_table %>%
+  mutate(target = recode(target, !!!target_label_map))
+
+calibration_plot_data %>%
+  ggplot(aes(x = avg_prob, y = actual_rate)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~ target, scales = "free") +
+  labs(
+    title = "Model Calibration",
+    x = "Predicted Probability",
+    y = "Observed Frequency"
+  ) +
+  theme_minimal(base_size = 11)
+```
+
+```{r separation}
+prediction_results %>%
+  filter(target == "target_dd10_12m") %>%
+  ggplot(aes(x = date)) +
+  geom_line(aes(y = prob), linewidth = 0.8) +
+  geom_point(aes(y = actual), alpha = 0.6, size = 1.3) +
+  labs(
+    title = "Predicted Drawdown Probability vs Realized Drawdown Events",
+    x = NULL,
+    y = "Probability / Event"
+  ) +
+  theme_minimal(base_size = 11)
+```
+
+The calibration results show that the model’s highest predicted-risk states generally correspond to higher observed event frequencies. This is especially important for drawdowns and volatility, where probability ranking matters more than exact classification.
+
+# 8. Model Interpretation
+
+To understand which macroeconomic variables drive predictions, the model is estimated on the full sample and coefficient estimates are examined.
+
+```{r coefficients}
+fit_fullsample_glm <- function(df, target, features) {
+  formula_text <- paste(target, "~", paste(features, collapse = " + "))
+  model_formula <- as.formula(formula_text)
+
+  fit <- glm(model_formula, data = df, family = binomial())
+  coefs <- summary(fit)$coefficients
+
+  tibble(
+    term = rownames(coefs),
+    estimate = coefs[, 1],
+    std_error = coefs[, 2],
+    z_value = coefs[, 3],
+    p_value = coefs[, 4],
+    target = target
+  )
+}
+
+coefficient_table <- bind_rows(
+  lapply(targets, function(x) {
+    fit_fullsample_glm(model_df_scaled, x, feature_cols)
+  })
+)
+
+coefficient_table_display <- coefficient_table %>%
+  mutate(target = recode(target, !!!target_label_map)) %>%
+  rename(Target = target)
+```
+
+```{r}
+kbl(
+  coefficient_table_display,
+  digits = 3,
+  caption = "Full-Sample Logistic Regression Coefficients by Target",
+  booktabs = TRUE,
+  align = "l"
+) %>%
+  kable_styling(
+    latex_options = c("scale_down"),
+    font_size = 7,
+    full_width = FALSE,
+    position = "center"
+  )
+```
+
+Coefficient estimates indicate that growth, credit spreads, real policy rates, and term-structure variables are the most influential predictors of adverse market states in this specification.
+
+# 9. Practical Use
+
+This framework is most useful as a risk-classification tool. In practice, it could be used to reduce equity exposure, tighten risk limits, or increase defensive positioning during periods of elevated predicted drawdown or volatility risk.
+
+# 10. Conclusion
+
+This project demonstrates that macroeconomic regime information contains meaningful predictive power for future market risk outcomes. While return direction is difficult to forecast, drawdowns and volatility exhibit strong out-of-sample relationships with macro conditions.
+
+The strongest results appear in drawdown and volatility classification, where both AUC and separation metrics indicate economically meaningful signal. These results suggest that macro-driven models are more effective for exposure control and risk management than for return forecasting.
+
+Future extensions could include alternative model specifications, additional features, regularization methods, or cross-asset applications.

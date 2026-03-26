@@ -1,0 +1,12 @@
+# Ignore outputs and intermediate files
+outputs/
+*_step*
+
+# R artifacts
+.Rhistory
+.RData
+.Rproj.user/
+
+# OS files
+.DS_Store
+Thumbs.db
