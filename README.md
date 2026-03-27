@@ -108,6 +108,17 @@ macro-allocation-model
 ```
 ---
 
+## SQL Feature Engineering
+
+Macro features are also constructed using SQL.
+
+The `sql/create_macro_features.sql` script creates a view (`macro_features`) from the raw macro dataset, including derived variables such as:
+
+- Term spread (10Y – 3M)
+- Cleaned macro signals for modeling
+
+This demonstrates integration of relational data workflows alongside the R-based modeling pipeline.
+
 ## How to Run
 
 1. Clone the repository
@@ -125,7 +136,7 @@ source("R/v2_model.R")
 4. Or knit the report:
 
 ```bash
-rmarkdown::render("Macro-portfolio-model.Rmd")
+rmarkdown::render("macro_model.Rmd")
 ```
 
 Notes
